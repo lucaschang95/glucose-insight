@@ -7,13 +7,29 @@ import { loadReadingsFromExcel } from "./domain/excel";
 import { formatDateTime, formatNumber, formatPct, formatValue, glossaryItems } from "./domain/reportFormat";
 
 type ReportState = {
-  readingsA: Reading[];
-  readingsB: Reading[];
-  cycleA: CycleAnalysis;
-  cycleB: CycleAnalysis;
+  cycles: Array<{
+    readings: Reading[];
+    cycle: CycleAnalysis;
+  }>;
   scorecard: Scorecard;
   generatedAt: Date;
 };
+
+type FileSlot = {
+  id: string;
+  file: File | null;
+};
+
+function uniqueCycleName(baseName: string, index: number, existingNames: Set<string>): string {
+  if (!existingNames.has(baseName)) {
+    existingNames.add(baseName);
+    return baseName;
+  }
+
+  const indexedName = `${baseName} (Cycle ${index + 1})`;
+  existingNames.add(indexedName);
+  return indexedName;
+}
 
 function FilePicker({
   label,
@@ -46,22 +62,22 @@ function MetricCard({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function KeyMetricTable({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
+function KeyMetricTable({ cycles }: { cycles: CycleAnalysis[] }) {
   const rows = [
-    ["样本数", String(a.sampleCount), String(b.sampleCount)],
-    ["平均血糖", formatValue(a.meanGlucose, "mmol/L"), formatValue(b.meanGlucose, "mmol/L")],
-    ["中位数", formatValue(a.medianGlucose, "mmol/L"), formatValue(b.medianGlucose, "mmol/L")],
-    ["最小 / 最大", `${formatValue(a.minGlucose)} / ${formatValue(a.maxGlucose)}`, `${formatValue(b.minGlucose)} / ${formatValue(b.maxGlucose)}`],
-    ["P10 / P90", `${formatValue(a.p10)} / ${formatValue(a.p90)}`, `${formatValue(b.p10)} / ${formatValue(b.p90)}`],
-    ["CV", formatValue(a.cvPct, "%"), formatValue(b.cvPct, "%")],
-    ["估算 GMI / A1c", formatValue(a.gmi, "%"), formatValue(b.gmi, "%")],
-    ["TIR 3.9-7.8", formatValue(a.tir3_9To7_8Pct, "%"), formatValue(b.tir3_9To7_8Pct, "%")],
-    ["TBR <3.9", formatValue(a.tbrBelow3_9Pct, "%"), formatValue(b.tbrBelow3_9Pct, "%")],
-    ["TAR >7.8", formatValue(a.tarAbove7_8Pct, "%"), formatValue(b.tarAbove7_8Pct, "%")],
-    ["低血糖分钟数", formatValue(a.lowMinutes, "min"), formatValue(b.lowMinutes, "min")],
-    ["高血糖分钟数", formatValue(a.highMinutes, "min"), formatValue(b.highMinutes, "min")],
-    ["夜间平均血糖", formatValue(a.nightMean, "mmol/L"), formatValue(b.nightMean, "mmol/L")],
-    ["每日 TIR 均值", formatValue(a.dailyTirMean, "%"), formatValue(b.dailyTirMean, "%")],
+    { label: "样本数", value: (cycle: CycleAnalysis) => String(cycle.sampleCount) },
+    { label: "平均血糖", value: (cycle: CycleAnalysis) => formatValue(cycle.meanGlucose, "mmol/L") },
+    { label: "中位数", value: (cycle: CycleAnalysis) => formatValue(cycle.medianGlucose, "mmol/L") },
+    { label: "最小 / 最大", value: (cycle: CycleAnalysis) => `${formatValue(cycle.minGlucose)} / ${formatValue(cycle.maxGlucose)}` },
+    { label: "P10 / P90", value: (cycle: CycleAnalysis) => `${formatValue(cycle.p10)} / ${formatValue(cycle.p90)}` },
+    { label: "CV", value: (cycle: CycleAnalysis) => formatValue(cycle.cvPct, "%") },
+    { label: "估算 GMI / A1c", value: (cycle: CycleAnalysis) => formatValue(cycle.gmi, "%") },
+    { label: "TIR 3.9-7.8", value: (cycle: CycleAnalysis) => formatValue(cycle.tir3_9To7_8Pct, "%") },
+    { label: "TBR <3.9", value: (cycle: CycleAnalysis) => formatValue(cycle.tbrBelow3_9Pct, "%") },
+    { label: "TAR >7.8", value: (cycle: CycleAnalysis) => formatValue(cycle.tarAbove7_8Pct, "%") },
+    { label: "低血糖分钟数", value: (cycle: CycleAnalysis) => formatValue(cycle.lowMinutes, "min") },
+    { label: "高血糖分钟数", value: (cycle: CycleAnalysis) => formatValue(cycle.highMinutes, "min") },
+    { label: "夜间平均血糖", value: (cycle: CycleAnalysis) => formatValue(cycle.nightMean, "mmol/L") },
+    { label: "每日 TIR 均值", value: (cycle: CycleAnalysis) => formatValue(cycle.dailyTirMean, "%") },
   ];
 
   return (
@@ -69,16 +85,18 @@ function KeyMetricTable({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
       <thead>
         <tr>
           <th>指标</th>
-          <th>{a.name}</th>
-          <th>{b.name}</th>
+          {cycles.map((cycle) => (
+            <th key={cycle.name}>{cycle.name}</th>
+          ))}
         </tr>
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row[0]}>
-            <td>{row[0]}</td>
-            <td>{row[1]}</td>
-            <td>{row[2]}</td>
+          <tr key={row.label}>
+            <td>{row.label}</td>
+            {cycles.map((cycle) => (
+              <td key={`${row.label}-${cycle.name}`}>{row.value(cycle)}</td>
+            ))}
           </tr>
         ))}
       </tbody>
@@ -86,7 +104,7 @@ function KeyMetricTable({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
   );
 }
 
-function ScoreTable({ a, b, scorecard }: { a: CycleAnalysis; b: CycleAnalysis; scorecard: Scorecard }) {
+function ScoreTable({ cycles, scorecard }: { cycles: CycleAnalysis[]; scorecard: Scorecard }) {
   return (
     <div className="table-wrap">
       <table>
@@ -96,10 +114,12 @@ function ScoreTable({ a, b, scorecard }: { a: CycleAnalysis; b: CycleAnalysis; s
             <th>判分规则</th>
             <th>权重</th>
             <th>胜者</th>
-            <th>{a.name}</th>
-            <th>{b.name}</th>
-            <th>{a.name}得分</th>
-            <th>{b.name}得分</th>
+            {cycles.map((cycle) => (
+              <th key={`${cycle.name}-value`}>{cycle.name}</th>
+            ))}
+            {cycles.map((cycle) => (
+              <th key={`${cycle.name}-score`}>{cycle.name}得分</th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -109,10 +129,12 @@ function ScoreTable({ a, b, scorecard }: { a: CycleAnalysis; b: CycleAnalysis; s
               <td>{describeRule(item)}</td>
               <td>{item.weight}</td>
               <td>{item.winner}</td>
-              <td>{formatValue(item.aValue, item.unit)}</td>
-              <td>{formatValue(item.bValue, item.unit)}</td>
-              <td>{formatNumber(item.aScore, 1)}</td>
-              <td>{formatNumber(item.bScore, 1)}</td>
+              {item.values.map((value) => (
+                <td key={`${item.label}-${value.cycleName}-value`}>{formatValue(value.value, item.unit)}</td>
+              ))}
+              {item.values.map((value) => (
+                <td key={`${item.label}-${value.cycleName}-score`}>{formatNumber(value.score, 1)}</td>
+              ))}
             </tr>
           ))}
           <tr>
@@ -123,13 +145,14 @@ function ScoreTable({ a, b, scorecard }: { a: CycleAnalysis; b: CycleAnalysis; s
             <td>-</td>
             <td>-</td>
             <td>-</td>
-            <td>-</td>
-            <td>
-              <strong>{formatNumber(scorecard.scoreA, 1)}</strong>
-            </td>
-            <td>
-              <strong>{formatNumber(scorecard.scoreB, 1)}</strong>
-            </td>
+            {cycles.map((cycle) => (
+              <td key={`${cycle.name}-empty`}>-</td>
+            ))}
+            {scorecard.totals.map((total) => (
+              <td key={`${total.cycleName}-total`}>
+                <strong>{formatNumber(total.score, 1)}</strong>
+              </td>
+            ))}
           </tr>
         </tbody>
       </table>
@@ -138,24 +161,27 @@ function ScoreTable({ a, b, scorecard }: { a: CycleAnalysis; b: CycleAnalysis; s
 }
 
 function Report({ report }: { report: ReportState }) {
-  const { readingsA, readingsB, cycleA, cycleB, scorecard, generatedAt } = report;
-  const takeaways = useMemo(() => buildKeyTakeaways(cycleA, cycleB, scorecard), [cycleA, cycleB, scorecard]);
+  const { cycles: reportCycles, scorecard, generatedAt } = report;
+  const cycles = reportCycles.map((item) => item.cycle);
+  const rankedTotals = [...scorecard.totals].sort((a, b) => b.score - a.score);
+  const bestCycle = cycles.find((cycle) => cycle.name === rankedTotals[0]?.cycleName) ?? cycles[0];
+  const takeaways = useMemo(() => buildKeyTakeaways(cycles, scorecard), [cycles, scorecard]);
 
   return (
     <>
       <section className="hero-band">
         <div className="hero-copy">
           <p className="eyebrow">CGM cycle comparison</p>
-          <h1>血糖 Cycle 对比报告</h1>
+          <h1>血糖多 Cycle 对比报告</h1>
           <p>
-            基于两段连续 CGM 数据，从达标时间、低血糖风险、高血糖暴露、波动性、昼夜表现和每日稳定性做综合判断。
+            基于多段连续 CGM 数据，从达标时间、低血糖风险、高血糖暴露、波动性、昼夜表现和每日稳定性做综合判断。
           </p>
         </div>
         <div className="hero-stats" aria-label="报告摘要">
           <MetricCard label="综合更优" value={scorecard.overallWinner === "难分伯仲" ? "整体接近" : scorecard.overallWinner} tone="green" />
-          <MetricCard label="TIR 3.9-7.8" value={`${formatPct(cycleA.tir3_9To7_8Pct)} vs ${formatPct(cycleB.tir3_9To7_8Pct)}`} tone="blue" />
-          <MetricCard label="TBR <3.9" value={`${formatPct(cycleA.tbrBelow3_9Pct)} vs ${formatPct(cycleB.tbrBelow3_9Pct)}`} tone="pink" />
-          <MetricCard label="CV" value={`${formatPct(cycleA.cvPct)} vs ${formatPct(cycleB.cvPct)}`} />
+          <MetricCard label="最高得分" value={rankedTotals[0] ? `${formatNumber(rankedTotals[0].score, 1)} / 100` : "-"} tone="blue" />
+          <MetricCard label="最佳 TIR" value={bestCycle ? formatPct(bestCycle.tir3_9To7_8Pct) : "-"} tone="pink" />
+          <MetricCard label="Cycle 数量" value={String(cycles.length)} />
         </div>
       </section>
 
@@ -165,12 +191,12 @@ function Report({ report }: { report: ReportState }) {
           <strong>{formatDateTime(generatedAt)}</strong>
         </div>
         <div>
-          <span>Cycle A</span>
-          <strong>{cycleA.name}</strong>
+          <span>参与 Cycle</span>
+          <strong>{cycles.length} 段</strong>
         </div>
         <div>
-          <span>Cycle B</span>
-          <strong>{cycleB.name}</strong>
+          <span>综合更优</span>
+          <strong>{scorecard.overallWinner === "难分伯仲" ? "整体接近" : scorecard.overallWinner}</strong>
         </div>
         <div>
           <span>采样间隔假设</span>
@@ -189,28 +215,30 @@ function Report({ report }: { report: ReportState }) {
 
       <section className="section">
         <h2>全周期血糖走势</h2>
-        <TrendChart a={cycleA} b={cycleB} readingsA={readingsA} readingsB={readingsB} />
+        <TrendChart cycles={reportCycles} />
       </section>
 
       <section className="chart-grid">
         <div className="chart-panel">
           <h2>核心指标对比</h2>
-          <CoreMetricChart a={cycleA} b={cycleB} />
+          <CoreMetricChart cycles={cycles} />
         </div>
         <div className="chart-panel">
           <h2>每日稳定性</h2>
-          <DailyMetricChart a={cycleA} b={cycleB} />
+          <DailyMetricChart cycles={cycles} />
         </div>
       </section>
 
       <section className="section two-column">
         <div>
           <h2>关键指标</h2>
-          <KeyMetricTable a={cycleA} b={cycleB} />
+          <div className="table-wrap">
+            <KeyMetricTable cycles={cycles} />
+          </div>
         </div>
         <div>
           <h2>每日范围</h2>
-          <DailyRangeStrip a={cycleA} b={cycleB} />
+          <DailyRangeStrip cycles={cycles} />
         </div>
       </section>
 
@@ -221,14 +249,16 @@ function Report({ report }: { report: ReportState }) {
             <p>总分 = 各评分项得分相加。每个评分项都按对应公式给两个 cycle 各自计分。</p>
           </div>
           <div className="score-summary">
-            <strong>{formatNumber(scorecard.scoreA, 1)}</strong>
-            <span>{cycleA.name}</span>
-            <strong>{formatNumber(scorecard.scoreB, 1)}</strong>
-            <span>{cycleB.name}</span>
+            {rankedTotals.map((total) => (
+              <div key={total.cycleName}>
+                <strong>{formatNumber(total.score, 1)}</strong>
+                <span>{total.cycleName}</span>
+              </div>
+            ))}
           </div>
         </div>
         <ScoreBars comparisons={scorecard.comparisons} />
-        <ScoreTable a={cycleA} b={cycleB} scorecard={scorecard} />
+        <ScoreTable cycles={cycles} scorecard={scorecard} />
       </section>
 
       <section className="section">
@@ -247,30 +277,45 @@ function Report({ report }: { report: ReportState }) {
 }
 
 const App = () => {
-  const [fileA, setFileA] = useState<File | null>(null);
-  const [fileB, setFileB] = useState<File | null>(null);
+  const [fileSlots, setFileSlots] = useState<FileSlot[]>([
+    { id: crypto.randomUUID(), file: null },
+    { id: crypto.randomUUID(), file: null },
+  ]);
   const [report, setReport] = useState<ReportState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const selectedFiles = fileSlots.map((slot) => slot.file).filter((file): file is File => file !== null);
+
+  function updateFile(id: string, file: File | null) {
+    setFileSlots((slots) => slots.map((slot) => (slot.id === id ? { ...slot, file } : slot)));
+  }
+
+  function addCycleSlot() {
+    setFileSlots((slots) => [...slots, { id: crypto.randomUUID(), file: null }]);
+  }
+
+  function removeCycleSlot(id: string) {
+    setFileSlots((slots) => (slots.length <= 2 ? slots : slots.filter((slot) => slot.id !== id)));
+  }
 
   async function handleCompare() {
-    if (!fileA || !fileB) {
-      setError("请先选择两份 Excel 文件。");
+    if (selectedFiles.length < 2) {
+      setError("请至少选择两份 Excel 文件。");
       return;
     }
 
     setIsLoading(true);
     setError(null);
     try {
-      const [readingsA, readingsB] = await Promise.all([loadReadingsFromExcel(fileA), loadReadingsFromExcel(fileB)]);
-      const cycleA = analyseCycle(labelCycle(readingsA, "Cycle A"), readingsA);
-      const cycleB = analyseCycle(labelCycle(readingsB, "Cycle B"), readingsB);
-      const scorecard = buildScorecard(cycleA, cycleB);
+      const readingsList = await Promise.all(selectedFiles.map((file) => loadReadingsFromExcel(file)));
+      const cycleNames = new Set<string>();
+      const cycles = readingsList.map((readings, index) => ({
+        readings,
+        cycle: analyseCycle(uniqueCycleName(labelCycle(readings, `Cycle ${index + 1}`), index, cycleNames), readings),
+      }));
+      const scorecard = buildScorecard(cycles.map((item) => item.cycle));
       setReport({
-        readingsA,
-        readingsB,
-        cycleA,
-        cycleB,
+        cycles,
         scorecard,
         generatedAt: new Date(),
       });
@@ -296,13 +341,24 @@ const App = () => {
         <section className="upload-band">
           <div className="upload-copy">
             <p className="eyebrow">local browser analysis</p>
-            <h1>上传两段血糖数据，直接生成 cycle 对比</h1>
-            <p>文件只在浏览器内解析。请选择包含“血糖”工作表的 Excel 文件，时间列在 B 列，血糖值在 C 列。</p>
+            <h1>上传多段血糖数据，直接生成 cycle 对比</h1>
+            <p>文件只在浏览器内解析。请选择至少两份包含“血糖”工作表的 Excel 文件，时间列在 B 列，血糖值在 C 列。</p>
           </div>
           <div className="upload-controls">
-            <FilePicker label="Cycle A" file={fileA} onChange={setFileA} />
-            <FilePicker label="Cycle B" file={fileB} onChange={setFileB} />
-            <button type="button" onClick={handleCompare} disabled={isLoading || !fileA || !fileB}>
+            {fileSlots.map((slot, index) => (
+              <div className="file-row" key={slot.id}>
+                <FilePicker label={`Cycle ${index + 1}`} file={slot.file} onChange={(file) => updateFile(slot.id, file)} />
+                {fileSlots.length > 2 ? (
+                  <button className="icon-button" type="button" onClick={() => removeCycleSlot(slot.id)} aria-label={`删除 Cycle ${index + 1}`}>
+                    -
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            <button className="secondary-button" type="button" onClick={addCycleSlot}>
+              添加 Cycle
+            </button>
+            <button type="button" onClick={handleCompare} disabled={isLoading || selectedFiles.length < 2}>
               {isLoading ? "正在分析..." : "生成报告"}
             </button>
           </div>
@@ -314,7 +370,7 @@ const App = () => {
         ) : (
           <section className="empty-state">
             <h2>等待数据</h2>
-            <p>上传两份 cycle 文件后，这里会显示趋势图、关键指标、综合评分和指标释义。</p>
+            <p>上传至少两份 cycle 文件后，这里会显示趋势图、关键指标、综合评分和指标释义。</p>
           </section>
         )}
       </main>

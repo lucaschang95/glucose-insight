@@ -91,16 +91,19 @@ export type MetricRule = {
 
 export type ScoreComparison = MetricRule & {
   winner: string;
-  aValue: number;
-  bValue: number;
-  aScore: number;
-  bScore: number;
+  values: Array<{
+    cycleName: string;
+    value: number;
+    score: number;
+  }>;
 };
 
 export type Scorecard = {
   comparisons: ScoreComparison[];
-  scoreA: number;
-  scoreB: number;
+  totals: Array<{
+    cycleName: string;
+    score: number;
+  }>;
   overallWinner: string;
 };
 
@@ -404,63 +407,61 @@ export function labelCycle(readings: Reading[], fallback: string): string {
   return buildDateRangeLabel(readings[0].time, readings[readings.length - 1].time);
 }
 
-function compareMetric(rule: MetricRule, a: CycleAnalysis, b: CycleAnalysis): Omit<ScoreComparison, "aScore" | "bScore"> {
-  const av = a[rule.key];
-  const bv = b[rule.key];
-  let winner = "平";
-
-  if (rule.better === "higher") {
-    if (av > bv) winner = a.name;
-    if (bv > av) winner = b.name;
-  } else {
-    if (av < bv) winner = a.name;
-    if (bv < av) winner = b.name;
-  }
-
-  return {
-    ...rule,
-    winner,
-    aValue: av,
-    bValue: bv,
-  };
+function winnersForMetric(rule: MetricRule, cycles: CycleAnalysis[]): string {
+  const values = cycles.map((cycle) => cycle[rule.key]);
+  const best = rule.better === "higher" ? Math.max(...values) : Math.min(...values);
+  const winners = cycles.filter((cycle) => cycle[rule.key] === best).map((cycle) => cycle.name);
+  return winners.length === cycles.length ? "平" : winners.join("、");
 }
 
-export function buildScorecard(a: CycleAnalysis, b: CycleAnalysis): Scorecard {
+export function buildScorecard(cycles: CycleAnalysis[]): Scorecard {
   const comparisons: ScoreComparison[] = METRIC_RULES.map((rule) => {
-    const item = compareMetric(rule, a, b);
-    let aScore = 0;
-    let bScore = 0;
+    const rawValues = cycles.map((cycle) => cycle[rule.key]);
+    const values = cycles.map((cycle) => {
+      const value = cycle[rule.key];
+      let score = 0;
 
-    if (item.better === "higher") {
-      const maxValue = Math.max(item.aValue, item.bValue);
-      aScore = maxValue === 0 ? item.weight : (item.aValue / maxValue) * item.weight;
-      bScore = maxValue === 0 ? item.weight : (item.bValue / maxValue) * item.weight;
-    } else {
-      const minValue = Math.min(item.aValue, item.bValue);
-      if (minValue === 0) {
-        aScore = item.aValue === 0 ? item.weight : 0;
-        bScore = item.bValue === 0 ? item.weight : 0;
+      if (rule.better === "higher") {
+        const maxValue = Math.max(...rawValues);
+        score = maxValue === 0 ? rule.weight : (value / maxValue) * rule.weight;
       } else {
-        aScore = (minValue / item.aValue) * item.weight;
-        bScore = (minValue / item.bValue) * item.weight;
+        const minValue = Math.min(...rawValues);
+        if (minValue === 0) {
+          score = value === 0 ? rule.weight : 0;
+        } else {
+          score = (minValue / value) * rule.weight;
+        }
       }
-    }
+
+      return {
+        cycleName: cycle.name,
+        value,
+        score,
+      };
+    });
 
     return {
-      ...item,
-      aScore,
-      bScore,
+      ...rule,
+      winner: winnersForMetric(rule, cycles),
+      values,
     };
   });
 
-  const scoreA = comparisons.reduce((sum, item) => sum + item.aScore, 0);
-  const scoreB = comparisons.reduce((sum, item) => sum + item.bScore, 0);
+  const totals = cycles.map((cycle) => ({
+    cycleName: cycle.name,
+    score: comparisons.reduce((sum, item) => {
+      const value = item.values.find((entry) => entry.cycleName === cycle.name);
+      return sum + (value?.score ?? 0);
+    }, 0),
+  }));
+
+  const bestScore = Math.max(...totals.map((item) => item.score));
+  const winners = totals.filter((item) => item.score === bestScore).map((item) => item.cycleName);
 
   return {
     comparisons,
-    scoreA,
-    scoreB,
-    overallWinner: scoreA > scoreB ? a.name : scoreB > scoreA ? b.name : "难分伯仲",
+    totals,
+    overallWinner: winners.length === totals.length ? "难分伯仲" : winners.join("、"),
   };
 }
 
@@ -471,44 +472,64 @@ export function describeRule(rule: MetricRule): string {
   return `${rule.label} 越低越好。该项满分 ${rule.weight} 分，按“两者较小值 / 本 cycle 数值 x 权重”计分。`;
 }
 
-export function buildKeyTakeaways(a: CycleAnalysis, b: CycleAnalysis, scorecard: Scorecard): string[] {
+function bestCycle(
+  cycles: CycleAnalysis[],
+  key: keyof CycleAnalysis,
+  better: "higher" | "lower",
+  tieLabel = "整体接近",
+): string {
+  const values = cycles.map((cycle) => Number(cycle[key]));
+  const best = better === "higher" ? Math.max(...values) : Math.min(...values);
+  const winners = cycles.filter((cycle) => Number(cycle[key]) === best).map((cycle) => cycle.name);
+  return winners.length === cycles.length ? tieLabel : winners.join("、");
+}
+
+function formatMetricList(cycles: CycleAnalysis[], key: keyof CycleAnalysis, unit = ""): string {
+  return cycles.map((cycle) => `${cycle.name}=${formatValue(Number(cycle[key]), unit)}`).join("；");
+}
+
+export function buildKeyTakeaways(cycles: CycleAnalysis[], scorecard: Scorecard): string[] {
   const lines: string[] = [];
   const overall =
     scorecard.overallWinner === "难分伯仲"
-      ? "综合评分接近，两段 cycle 难分伯仲。"
+      ? "综合评分接近，各 cycle 难分伯仲。"
       : `综合评分更优的是 ${scorecard.overallWinner}。`;
   lines.push(overall);
 
-  const hypoWinner = a.tbrBelow3_9Pct < b.tbrBelow3_9Pct ? a.name : b.tbrBelow3_9Pct < a.tbrBelow3_9Pct ? b.name : "平";
-  const rangeWinner = a.tir3_9To7_8Pct > b.tir3_9To7_8Pct ? a.name : b.tir3_9To7_8Pct > a.tir3_9To7_8Pct ? b.name : "平";
-  const stableWinner = a.cvPct < b.cvPct ? a.name : b.cvPct < a.cvPct ? b.name : "平";
+  const hypoWinner = bestCycle(cycles, "tbrBelow3_9Pct", "lower", "接近");
+  const rangeWinner = bestCycle(cycles, "tir3_9To7_8Pct", "higher", "接近");
+  const stableWinner = bestCycle(cycles, "cvPct", "lower", "接近");
 
   lines.push(
-    `低血糖风险方面：${hypoWinner === "平" ? "两者接近" : `${hypoWinner} 更好`}，TBR <3.9 分别为 ${formatPct(
-      a.tbrBelow3_9Pct,
-    )} vs ${formatPct(b.tbrBelow3_9Pct)}。`,
+    `低血糖风险方面：${hypoWinner === "接近" ? "各 cycle 接近" : `${hypoWinner} 更好`}，TBR <3.9 为 ${formatMetricList(
+      cycles,
+      "tbrBelow3_9Pct",
+      "%",
+    )}。`,
   );
   lines.push(
-    `达标时间方面：${rangeWinner === "平" ? "两者接近" : `${rangeWinner} 更好`}，TIR 3.9-7.8 分别为 ${formatPct(
-      a.tir3_9To7_8Pct,
-    )} vs ${formatPct(b.tir3_9To7_8Pct)}。`,
+    `达标时间方面：${rangeWinner === "接近" ? "各 cycle 接近" : `${rangeWinner} 更好`}，TIR 3.9-7.8 为 ${formatMetricList(
+      cycles,
+      "tir3_9To7_8Pct",
+      "%",
+    )}。`,
   );
   lines.push(
-    `波动性方面：${stableWinner === "平" ? "两者接近" : `${stableWinner} 更稳`}，CV 分别为 ${formatPct(
-      a.cvPct,
-    )} vs ${formatPct(b.cvPct)}。`,
+    `波动性方面：${stableWinner === "接近" ? "各 cycle 接近" : `${stableWinner} 更稳`}，CV 为 ${formatMetricList(cycles, "cvPct", "%")}。`,
   );
 
   const biggestGap = [...scorecard.comparisons]
-    .map((item) => ({ ...item, gap: Math.abs(item.aValue - item.bValue) }))
+    .map((item) => {
+      const values = item.values.map((entry) => entry.value);
+      return { ...item, gap: Math.max(...values) - Math.min(...values) };
+    })
     .sort((x, y) => y.weight * y.gap - x.weight * x.gap)[0];
 
   if (biggestGap) {
     lines.push(
-      `最拉开差距的指标是“${biggestGap.label}”，${a.name}=${formatValue(
-        biggestGap.aValue,
-        biggestGap.unit,
-      )}，${b.name}=${formatValue(biggestGap.bValue, biggestGap.unit)}。`,
+      `最拉开差距的指标是“${biggestGap.label}”，${biggestGap.values
+        .map((item) => `${item.cycleName}=${formatValue(item.value, biggestGap.unit)}`)
+        .join("；")}。`,
     );
   }
 

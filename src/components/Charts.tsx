@@ -3,35 +3,37 @@ import { downsampleReadings, THRESHOLDS } from "../domain/glucoseAnalysis";
 import { formatNumber, formatShortDate } from "../domain/reportFormat";
 
 type TrendChartProps = {
-  a: CycleAnalysis;
-  b: CycleAnalysis;
-  readingsA: Reading[];
-  readingsB: Reading[];
+  cycles: Array<{
+    cycle: CycleAnalysis;
+    readings: Reading[];
+  }>;
 };
 
 type BarMetric = {
   label: string;
-  aValue: number;
-  bValue: number;
+  values: Array<{
+    cycleName: string;
+    value: number;
+  }>;
 };
 
-const colorA = "#2563eb";
-const colorB = "#db2777";
+const chartColors = ["#2563eb", "#db2777", "#16a34a", "#f59e0b", "#7c3aed", "#0891b2", "#dc2626", "#475569"];
 
 function clampLabel(value: string): string {
   return value.length > 12 ? `${value.slice(0, 12)}...` : value;
 }
 
-export function TrendChart({ a, b, readingsA, readingsB }: TrendChartProps) {
+export function TrendChart({ cycles }: TrendChartProps) {
   const width = 980;
   const height = 340;
   const padding = { top: 28, right: 26, bottom: 48, left: 58 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const series = [
-    { label: a.name, color: colorA, points: downsampleReadings(readingsA) },
-    { label: b.name, color: colorB, points: downsampleReadings(readingsB) },
-  ];
+  const series = cycles.map((item, index) => ({
+    label: item.cycle.name,
+    color: chartColors[index % chartColors.length],
+    points: downsampleReadings(item.readings),
+  }));
   const allPoints = series.flatMap((item) => item.points);
   const minX = Math.min(...allPoints.map((point) => point.time.getTime()));
   const maxX = Math.max(...allPoints.map((point) => point.time.getTime()));
@@ -81,7 +83,7 @@ export function TrendChart({ a, b, readingsA, readingsB }: TrendChartProps) {
         );
       })}
       {series.map((item, index) => (
-        <g key={item.label} transform={`translate(${padding.left + index * 220}, 8)`}>
+        <g key={item.label} transform={`translate(${padding.left + (index % 4) * 220}, ${8 + Math.floor(index / 4) * 20})`}>
           <rect width="14" height="14" rx="3" fill={item.color} />
           <text x="22" y="12" fontSize="13" fill="#243044">
             {item.label}
@@ -97,14 +99,12 @@ export function TrendChart({ a, b, readingsA, readingsB }: TrendChartProps) {
 
 function MetricBarChart({
   title,
-  a,
-  b,
+  cycles,
   metrics,
   percent,
 }: {
   title: string;
-  a: CycleAnalysis;
-  b: CycleAnalysis;
+  cycles: CycleAnalysis[];
   metrics: BarMetric[];
   percent: boolean;
 }) {
@@ -113,11 +113,11 @@ function MetricBarChart({
   const padding = { top: 42, right: 22, bottom: 86, left: 64 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const maxValue = Math.max(...metrics.flatMap((metric) => [metric.aValue, metric.bValue]), 1);
+  const maxValue = Math.max(...metrics.flatMap((metric) => metric.values.map((item) => item.value)), 1);
   const yMax = percent ? Math.max(100, Math.ceil(maxValue / 5) * 5) : Math.ceil(maxValue * 1.15);
   const yScale = (value: number) => padding.top + plotHeight - (value / Math.max(yMax, 0.0001)) * plotHeight;
   const groupWidth = plotWidth / metrics.length;
-  const barWidth = Math.min(24, groupWidth * 0.26);
+  const barWidth = Math.min(18, (groupWidth * 0.72) / Math.max(cycles.length, 1));
   const tickStep = percent ? 20 : Math.max(1, Math.ceil(yMax / 5));
   const ticks = Array.from({ length: Math.floor(yMax / tickStep) + 1 }, (_, index) => index * tickStep);
 
@@ -139,86 +139,98 @@ function MetricBarChart({
       <line x1={padding.left} y1={padding.top + plotHeight} x2={width - padding.right} y2={padding.top + plotHeight} stroke="#7d8798" />
       {metrics.map((metric, index) => {
         const center = padding.left + groupWidth * index + groupWidth / 2;
-        const ax = center - barWidth - 6;
-        const bx = center + 6;
-        const ay = yScale(metric.aValue);
-        const by = yScale(metric.bValue);
+        const startX = center - (barWidth * metric.values.length + 4 * (metric.values.length - 1)) / 2;
         return (
           <g key={metric.label}>
-            <rect x={ax} y={ay} width={barWidth} height={padding.top + plotHeight - ay} fill={colorA} rx="4" />
-            <rect x={bx} y={by} width={barWidth} height={padding.top + plotHeight - by} fill={colorB} rx="4" />
-            <text x={ax + barWidth / 2} y={ay - 8} textAnchor="middle" fontSize="11" fill="#243044">
-              {formatNumber(metric.aValue, 1)}
-            </text>
-            <text x={bx + barWidth / 2} y={by - 8} textAnchor="middle" fontSize="11" fill="#243044">
-              {formatNumber(metric.bValue, 1)}
-            </text>
+            {metric.values.map((item, valueIndex) => {
+              const x = startX + valueIndex * (barWidth + 4);
+              const y = yScale(item.value);
+              return (
+                <g key={item.cycleName}>
+                  <rect x={x} y={y} width={barWidth} height={padding.top + plotHeight - y} fill={chartColors[valueIndex % chartColors.length]} rx="4" />
+                  <text x={x + barWidth / 2} y={y - 8} textAnchor="middle" fontSize="10" fill="#243044">
+                    {formatNumber(item.value, 1)}
+                  </text>
+                </g>
+              );
+            })}
             <text x={center} y={height - 40} textAnchor="middle" fontSize="12" fill="#344054" transform={`rotate(-24 ${center} ${height - 40})`}>
               {clampLabel(metric.label)}
             </text>
           </g>
         );
       })}
-      <g transform={`translate(${padding.left}, 12)`}>
-        <rect width="14" height="14" rx="3" fill={colorA} />
-        <text x="22" y="12" fontSize="13" fill="#243044">
-          {a.name}
-        </text>
-        <rect x="210" width="14" height="14" rx="3" fill={colorB} />
-        <text x="232" y="12" fontSize="13" fill="#243044">
-          {b.name}
-        </text>
-      </g>
+      {cycles.map((cycle, index) => (
+        <g key={cycle.name} transform={`translate(${padding.left + (index % 3) * 180}, ${12 + Math.floor(index / 3) * 18})`}>
+          <rect width="14" height="14" rx="3" fill={chartColors[index % chartColors.length]} />
+          <text x="22" y="12" fontSize="13" fill="#243044">
+            {cycle.name}
+          </text>
+        </g>
+      ))}
     </svg>
   );
 }
 
-export function CoreMetricChart({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
+function metricValues(cycles: CycleAnalysis[], key: keyof CycleAnalysis): BarMetric["values"] {
+  return cycles.map((cycle) => ({
+    cycleName: cycle.name,
+    value: Number(cycle[key]),
+  }));
+}
+
+export function CoreMetricChart({ cycles }: { cycles: CycleAnalysis[] }) {
   return (
     <MetricBarChart
       title="核心指标对比"
-      a={a}
-      b={b}
+      cycles={cycles}
       percent
       metrics={[
-        { label: "TIR 3.9-7.8", aValue: a.tir3_9To7_8Pct, bValue: b.tir3_9To7_8Pct },
-        { label: "TBR <3.9", aValue: a.tbrBelow3_9Pct, bValue: b.tbrBelow3_9Pct },
-        { label: "TAR >7.8", aValue: a.tarAbove7_8Pct, bValue: b.tarAbove7_8Pct },
-        { label: "CV", aValue: a.cvPct, bValue: b.cvPct },
-        { label: "夜间CV", aValue: a.nightCvPct, bValue: b.nightCvPct },
-        { label: "日间CV", aValue: a.dayCvPct, bValue: b.dayCvPct },
+        { label: "TIR 3.9-7.8", values: metricValues(cycles, "tir3_9To7_8Pct") },
+        { label: "TBR <3.9", values: metricValues(cycles, "tbrBelow3_9Pct") },
+        { label: "TAR >7.8", values: metricValues(cycles, "tarAbove7_8Pct") },
+        { label: "CV", values: metricValues(cycles, "cvPct") },
+        { label: "夜间CV", values: metricValues(cycles, "nightCvPct") },
+        { label: "日间CV", values: metricValues(cycles, "dayCvPct") },
       ]}
     />
   );
 }
 
-export function DailyMetricChart({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
+export function DailyMetricChart({ cycles }: { cycles: CycleAnalysis[] }) {
   return (
     <MetricBarChart
       title="每日稳定性"
-      a={a}
-      b={b}
+      cycles={cycles}
       percent
       metrics={[
-        { label: "每日TIR均值", aValue: a.dailyTirMean, bValue: b.dailyTirMean },
-        { label: "每日TIR波动SD", aValue: a.dailyTirSd, bValue: b.dailyTirSd },
-        { label: "无低血糖天数%", aValue: a.daysWithoutLowPct, bValue: b.daysWithoutLowPct },
-        { label: "无高血糖天数%", aValue: a.daysWithoutHighPct, bValue: b.daysWithoutHighPct },
+        { label: "每日TIR均值", values: metricValues(cycles, "dailyTirMean") },
+        { label: "每日TIR波动SD", values: metricValues(cycles, "dailyTirSd") },
+        { label: "无低血糖天数%", values: metricValues(cycles, "daysWithoutLowPct") },
+        { label: "无高血糖天数%", values: metricValues(cycles, "daysWithoutHighPct") },
       ]}
     />
   );
 }
 
 export function ScoreBars({ comparisons }: { comparisons: ScoreComparison[] }) {
-  const maxScore = Math.max(...comparisons.flatMap((item) => [item.aScore, item.bScore]), 1);
+  const maxScore = Math.max(...comparisons.flatMap((item) => item.values.map((value) => value.score)), 1);
   return (
     <div className="score-bars">
       {comparisons.map((item) => (
         <div className="score-bar-row" key={item.label}>
           <span>{item.label}</span>
           <div className="score-track" aria-hidden="true">
-            <i className="score-fill score-fill-a" style={{ width: `${(item.aScore / maxScore) * 100}%` }} />
-            <i className="score-fill score-fill-b" style={{ width: `${(item.bScore / maxScore) * 100}%` }} />
+            {item.values.map((value, index) => (
+              <i
+                className="score-fill"
+                key={`${item.label}-${value.cycleName}`}
+                style={{
+                  width: `${(value.score / maxScore) * 100}%`,
+                  background: chartColors[index % chartColors.length],
+                }}
+              />
+            ))}
           </div>
         </div>
       ))}
@@ -226,21 +238,27 @@ export function ScoreBars({ comparisons }: { comparisons: ScoreComparison[] }) {
   );
 }
 
-export function DailyRangeStrip({ a, b }: { a: CycleAnalysis; b: CycleAnalysis }) {
-  const days = [a, b].flatMap((cycle) => cycle.dailySummaries);
+export function DailyRangeStrip({ cycles }: { cycles: CycleAnalysis[] }) {
+  const days = cycles.flatMap((cycle) => cycle.dailySummaries);
   const min = Math.min(...days.map((day) => day.min));
   const max = Math.max(...days.map((day) => day.max));
   const scale = (value: number) => ((value - min) / Math.max(max - min, 0.1)) * 100;
 
   return (
     <div className="daily-strip">
-      {[a, b].map((cycle) => (
+      {cycles.map((cycle, cycleIndex) => (
         <div key={cycle.name} className="daily-strip-group">
           <strong>{cycle.name}</strong>
           <div className="daily-days">
             {cycle.dailySummaries.map((day) => (
               <div className="daily-day" key={`${cycle.name}-${day.day}`} title={`${formatShortDate(new Date(day.day))}: ${formatNumber(day.min, 1)}-${formatNumber(day.max, 1)} mmol/L`}>
-                <span style={{ left: `${scale(day.min)}%`, width: `${Math.max(scale(day.max) - scale(day.min), 2)}%` }} />
+                <span
+                  style={{
+                    left: `${scale(day.min)}%`,
+                    width: `${Math.max(scale(day.max) - scale(day.min), 2)}%`,
+                    background: chartColors[cycleIndex % chartColors.length],
+                  }}
+                />
               </div>
             ))}
           </div>
